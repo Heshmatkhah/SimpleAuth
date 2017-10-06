@@ -1,0 +1,16 @@
+{{define "nav"}}
+<div class="header clearfix">
+    <nav>
+        <ul class="nav nav-pills pull-right">
+            <li role="presentation"><a href="/">Home</a></li>
+            <li role="presentation"><a href="/home">Dashboard</a></li>
+            {{ if .is_logged_in }}
+            <li role="presentation"><a href="/users/logout">Logout</a></li>
+            {{ else }}
+            <li role="presentation"><a href="/users/login">Login</a></li>
+            {{ end }}
+        </ul>
+    </nav>
+    <h3 class="text-muted">SimpleAuth</h3>
+</div>
+{{end}}

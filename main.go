@@ -1,4 +1,4 @@
-package SimpleAuth
+package exa
 
 import (
 	"crypto/rand"
@@ -11,8 +11,8 @@ import (
 	"github.com/boltdb/bolt"
 	"io"
 	"log"
+	"net/http"
 	"strings"
-	"sync/atomic"
 	"sync"
 	"time"
 )
@@ -38,9 +38,9 @@ type database struct {
 
 func (db *database) Close() error {
 	db.lock.Lock()
-	atomic.AddInt32(&db.count, -1)
-	count := atomic.LoadInt32(&db.count)
-	db.lock.Unlock()
+	defer db.lock.Unlock()
+	db.count -= 1
+	count := db.count
 	if count == 0 {
 		return db.DataBase.Close()
 	} else {
@@ -50,9 +50,9 @@ func (db *database) Close() error {
 
 func (db *database) Open() (*database, error) {
 	db.lock.Lock()
-	atomic.AddInt32(&db.count, 1)
-	count := atomic.LoadInt32(&db.count)
-	db.lock.Unlock()
+	defer db.lock.Unlock()
+	db.count += 1
+	count := db.count
 	if count == 1 {
 		var err error
 		db.DataBase, err = bolt.Open(db.path, 0644, nil)
@@ -429,10 +429,11 @@ func (m *Manager) ChangeUserPassword(username, password string) (*User, error) {
 	pass, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	u := m.GetUser(username)
 	if u != nil {
-		u.(User).Password = pass
-		err := m.saveUser(&u.(User))
+		user := u.(User)
+		user.Password = pass
+		err := m.saveUser(&user)
 		if err == nil {
-			return &u.(User), nil
+			return &user, nil
 		}
 		return nil, err
 	}
@@ -466,11 +467,11 @@ func (m *Manager) SessionHandler(context *gin.Context) {
 func (m *Manager) AuthenticatedOnly(context *gin.Context) {
 	s, ok := context.Get("session_id")
 	if !ok || s == nil {
-		context.Redirect(307, m.LoginURL)
+		context.Redirect(http.StatusFound, m.LoginURL)
 	} else {
 		session := m.GetSession(s.(string)).(SessionStorage)
 		if session.Username == "" {
-			context.Redirect(307, m.LoginURL)
+			context.Redirect(http.StatusFound, m.LoginURL)
 		}
 	}
 }
@@ -482,10 +483,10 @@ func (m *Manager) UnauthenticatedOnly(context *gin.Context) {
 		if session != nil {
 			if session.(SessionStorage).Username != "" {
 				//context.AbortWithStatus(http.StatusUnauthorized)
-				context.Redirect(307, m.UnauthorizedURL)
+				context.Redirect(http.StatusFound, m.UnauthorizedURL)
 			}
 		} else {
-			context.Redirect(307, m.UnauthorizedURL)
+			context.Redirect(http.StatusFound, m.UnauthorizedURL)
 		}
 	}
 }
@@ -509,10 +510,10 @@ func (m *Manager) Login(context *gin.Context) {
 			session.Username = username
 			session.Save(*m) // m.SaveSession(session)
 		}
-		context.Redirect(307, m.LoginSuccessfulRedirectURL)
+		context.Redirect(http.StatusFound, m.LoginSuccessfulRedirectURL)
 	} else {
 		context.Set("Login_error", "invalid username or password")
-		context.Redirect(307, m.LoginURL)
+		context.Redirect(http.StatusFound, m.LoginURL)
 	}
 }
 
@@ -524,6 +525,6 @@ func (m *Manager) Logout(context *gin.Context) {
 		session.Set("Login_status", false)
 		session.Username = ""
 		session.Save(*m) // m.SaveSession(session)
-		context.Redirect(307, "/")
+		context.Redirect(http.StatusFound, "/")
 	}
 }
