@@ -1,20 +1,18 @@
-package exa
+package SimpleAuth
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"encoding/gob"
 	"fmt"
-	"golang.org/x/crypto/bcrypt"
+	"github.com/gin-gonic/contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/boltdb/bolt"
-	"io"
+	"golang.org/x/crypto/bcrypt"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 )
 
 type User struct {
@@ -89,104 +87,13 @@ func (db *database) Initialize(path string) error {
 			return err
 		}
 
-		bucket, err = tx.CreateBucketIfNotExists([]byte("sessions"))
-		if err != nil {
-			return err
-		}
-
 		return nil
 	})
 }
 
 /* ***************************************** *
  *                                           *
- *                  Session                  *
- *                                           *
- * ***************************************** */
-
-type Session interface {
-	Set(key, value interface{}) bool
-	Get(key interface{}) interface{}
-	Delete(key interface{}) interface{}
-	Validate(maxLife int64) bool
-	SessionID() string
-}
-
-type SessionStorage struct {
-	Username   string
-	sessionID  string
-	lastAccess int64
-	values     map[string]interface{}
-}
-
-type storage struct {
-	SessionID  string                 `json:"session_id"`
-	Username   string                 `json:"username"`
-	LastAccess int64                  `json:"last_access"`
-	Values     map[string]interface{} `json:"values"`
-}
-
-func (s *SessionStorage) SessionID() string {
-	return s.sessionID
-}
-
-func (s *SessionStorage) updateAccess() error {
-	s.lastAccess = time.Now().Unix()
-	return nil
-}
-
-func (s *SessionStorage) Set(key string, value interface{}) bool {
-	s.updateAccess()
-	s.values[key] = value
-	return true
-}
-
-func (s *SessionStorage) Get(key string) interface{} {
-	s.updateAccess()
-	if v, ok := s.values[key]; ok {
-		return v
-	}
-	return nil
-}
-
-func (s *SessionStorage) Delete(key string) interface{} {
-	s.updateAccess()
-	if v, ok := s.values[key]; ok {
-		defer delete(s.values, key)
-		return v
-	}
-	return nil
-}
-
-func (s *SessionStorage) Validate(maxLife int64) bool {
-	if (s.lastAccess + maxLife) < time.Now().Unix() {
-		return false
-	}
-	return true
-}
-
-func (s *SessionStorage) Save(manager Manager) error {
-	return manager.SaveSession(*s)
-}
-
-func (s *SessionStorage) generateSessionToken() string {
-	// We're using a random 16 character string as the session token
-	// This is NOT a secure way of generating session tokens
-	// DO NOT USE THIS IN PRODUCTION
-	//return strconv.FormatInt(rand.Int63(), 16)	//"math/rand"	//"strconv"
-
-	b := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		return ""
-	}
-	s.sessionID = base64.URLEncoding.EncodeToString(b)
-	s.updateAccess()
-	return s.sessionID
-}
-
-/* ***************************************** *
- *                                           *
- *              Session Manager              *
+ *                Auth Manager               *
  *                                           *
  * ***************************************** */
 
@@ -194,140 +101,35 @@ type Manager struct {
 	db                         database
 	LoginURL                   string
 	LogoutURL                  string
-	CookieName                 string
 	UnauthorizedURL            string
-	MaxCookieLifeTime          int64
 	LoginSuccessfulRedirectURL string
 }
 
 type Options struct {
 	LoginURL                   string
 	LogoutURL                  string
-	CookieName                 string
 	UnauthorizedURL            string
-	MaxCookieLifeTime          int64
 	LoginSuccessfulRedirectURL string
 }
 
 var DefaultOptions = &Options{
 	LoginURL:                   "/login",
 	LogoutURL:                  "/logout",
-	CookieName:                 "SimpleAuthCookie",
 	UnauthorizedURL:            "/401",
-	MaxCookieLifeTime:          86400, //One Day
 	LoginSuccessfulRedirectURL: "/home",
 }
 
 func (m *Manager) Initialize(db_path string, options *Options) error {
+	gob.Register(User{})
 	if options == nil {
 		options = DefaultOptions
 	}
-	m.MaxCookieLifeTime = options.MaxCookieLifeTime
-	m.CookieName = options.CookieName
 	m.LoginURL = options.LoginURL
 	m.LogoutURL = options.LogoutURL
 	m.UnauthorizedURL = options.UnauthorizedURL
 	m.LoginSuccessfulRedirectURL = options.LoginSuccessfulRedirectURL
 
 	return m.db.Initialize(db_path)
-}
-
-func (m *Manager) NewSession() SessionStorage {
-	s := SessionStorage{Username: "", values: make(map[string]interface{})}
-	s.generateSessionToken()
-	m.SaveSession(s)
-	return s
-}
-
-func (m *Manager) SaveSession(s SessionStorage) error {
-
-	m.db.Open()
-	defer m.db.Close()
-
-	return m.db.DataBase.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists([]byte("sessions"))
-		if err != nil {
-			return err
-		}
-
-		encoded, err := json.Marshal(&storage{s.sessionID, s.Username, s.lastAccess, s.values})
-		if err != nil {
-			return err
-		}
-
-		err = bucket.Put([]byte(s.sessionID), encoded)
-		if err != nil {
-			return err
-		}
-
-		return nil
-	})
-}
-
-func (m *Manager) RemoveSession(sessionID string) error {
-
-	m.db.Open()
-	defer m.db.Close()
-
-	return m.db.DataBase.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists([]byte("sessions"))
-		if err != nil {
-			return err
-		}
-
-		err = bucket.Delete([]byte(sessionID))
-		if err != nil {
-			return err
-		}
-
-		return nil
-	})
-}
-
-func (m *Manager) GetSession(sessionID string) interface{} {
-	m.db.Open()
-	defer m.db.Close()
-
-	var session SessionStorage
-
-	err := m.db.DataBase.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("sessions"))
-		if bucket == nil {
-			return fmt.Errorf("session's Bucket not found")
-		}
-
-		val := bucket.Get([]byte(sessionID))
-		if val != nil {
-			s := storage{}
-			err := json.Unmarshal(val, &s)
-			if err == nil {
-				session.sessionID = s.SessionID
-				session.Username = s.Username
-				session.lastAccess = s.LastAccess
-				session.values = s.Values
-			}
-			return err
-
-		} else {
-			session = m.NewSession()
-		}
-		return nil
-	})
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if session.Validate(m.MaxCookieLifeTime) {
-		session.updateAccess()
-		m.SaveSession(session)
-		return session
-	} else {
-		m.RemoveSession(sessionID)
-	}
-
-	return nil
-
 }
 
 func (m *Manager) GetUser(username string) interface{} {
@@ -445,48 +247,24 @@ func (m *Manager) ChangeUserPassword(username, password string) (*User, error) {
  *                 Middleware                *
  *                                           *
  * ***************************************** */
-
-func (m *Manager) SessionHandler(context *gin.Context) {
-	if token, err := context.Cookie(m.CookieName); err == nil || token != "" {
-		s := m.GetSession(token)
-		if s != nil {
-			context.SetCookie(m.CookieName, s.(SessionStorage).sessionID, int(m.MaxCookieLifeTime), "", "", false, true)
-			context.Set("session_id", s.(SessionStorage).sessionID)
-		} else {
-			context.Set("session_id", nil)
-			context.SetCookie(m.CookieName, "", int(m.MaxCookieLifeTime), "", "", false, true)
-		}
-	} else {
-		session := m.NewSession()
-		context.SetCookie(m.CookieName, session.SessionID(), int(m.MaxCookieLifeTime), "", "", false, true)
-		context.Set("session_id", session.sessionID)
-
-	}
-}
-
-func (m *Manager) AuthenticatedOnly(context *gin.Context) {
-	s, ok := context.Get("session_id")
-	if !ok || s == nil {
-		context.Redirect(http.StatusFound, m.LoginURL)
-	} else {
-		session := m.GetSession(s.(string)).(SessionStorage)
-		if session.Username == "" {
+func (m *Manager) AuthenticatedOnly() gin.HandlerFunc {
+	return func(context *gin.Context) {
+		session := sessions.Default(context)
+		if user := session.Get("user"); user == nil {
 			context.Redirect(http.StatusFound, m.LoginURL)
+		} else {
+			context.Next()
 		}
 	}
 }
 
-func (m *Manager) UnauthenticatedOnly(context *gin.Context) {
-	s, _ := context.Get("session_id")
-	if s != nil {
-		session := m.GetSession(s.(string))
-		if session != nil {
-			if session.(SessionStorage).Username != "" {
-				//context.AbortWithStatus(http.StatusUnauthorized)
-				context.Redirect(http.StatusFound, m.UnauthorizedURL)
-			}
-		} else {
+func (m *Manager) UnauthenticatedOnly() gin.HandlerFunc {
+	return func(context *gin.Context) {
+		session := sessions.Default(context)
+		if user := session.Get("user"); user != nil {
 			context.Redirect(http.StatusFound, m.UnauthorizedURL)
+		} else {
+			context.Next()
 		}
 	}
 }
@@ -495,21 +273,9 @@ func (m *Manager) Login(context *gin.Context) {
 	username := context.PostForm("username")
 	password := context.PostForm("password")
 	if ok := m.IsUserValid(username, password); ok {
-		s, _ := context.Get("session_id")
-		if s == nil {
-			session := m.NewSession()
-			context.SetCookie(m.CookieName, session.SessionID(), int(m.MaxCookieLifeTime), "", "", false, true)
-			session.Set("Login_status", true)
-			session.Username = username
-			session.Save(*m) // m.SaveSession(session)
-			context.Set("session_id", session.SessionID())
-		} else {
-			session := m.GetSession(s.(string)).(SessionStorage)
-			context.SetCookie(m.CookieName, session.SessionID(), int(m.MaxCookieLifeTime), "", "", false, true)
-			session.Set("Login_status", true)
-			session.Username = username
-			session.Save(*m) // m.SaveSession(session)
-		}
+		session := sessions.Default(context)
+		session.Set("user", m.GetUser(username))
+		session.Save()
 		context.Redirect(http.StatusFound, m.LoginSuccessfulRedirectURL)
 	} else {
 		context.Set("Login_error", "invalid username or password")
@@ -518,13 +284,8 @@ func (m *Manager) Login(context *gin.Context) {
 }
 
 func (m *Manager) Logout(context *gin.Context) {
-	s, _ := context.Get("session_id")
-	if s != nil {
-		session := m.GetSession(s.(string)).(SessionStorage)
-		context.SetCookie(m.CookieName, session.SessionID(), int(m.MaxCookieLifeTime), "", "", false, true)
-		session.Set("Login_status", false)
-		session.Username = ""
-		session.Save(*m) // m.SaveSession(session)
-		context.Redirect(http.StatusFound, "/")
-	}
+	session := sessions.Default(context)
+	session.Delete("user")
+	session.Save()
+	context.Redirect(http.StatusFound, "/")
 }

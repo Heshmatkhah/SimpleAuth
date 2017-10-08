@@ -1,12 +1,13 @@
 package main
 
 import (
-	"github.com/MA-Heshmatkhah/SimpleAuth"
 	"fmt"
+	"github.com/gin-gonic/contrib/sessions"
 	"github.com/gin-gonic/gin"
+	"github.com/MA-Heshmatkhah/SimpleAuth"
 	"net/http"
-	"path"
 	"os"
+	"path"
 )
 
 var mySessionManager SimpleAuth.Manager
@@ -16,13 +17,12 @@ func main() {
 	mySessionManager.Initialize(path.Join(cwd, "DataBase.db"), &SimpleAuth.Options{
 		LoginURL:                   "/users/login",
 		LogoutURL:                  "/users/logout",
-		CookieName:                 "SimpleAuthCookie",
 		UnauthorizedURL:            "/401",
-		MaxCookieLifeTime:          86400, //One Day
 		LoginSuccessfulRedirectURL: "/home",
 	})
 
 	//register a user
+	// You can use this function in your request handler to make a "Sign Up" page
 	mySessionManager.RegisterNewUser("admin", "123456", []string{"Admins"})
 
 	fmt.Println("Start Development Server")
@@ -33,8 +33,9 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 
-	// Set SessionHandler middleware for all routes
-	router.Use(mySessionManager.SessionHandler)
+	// set session using gin-gonic/contrib/sessions
+	store := sessions.NewCookieStore([]byte("secret"))
+	router.Use(sessions.Sessions("SimpleAuthCookie", store))
 
 	// Load templates
 	router.LoadHTMLGlob("./templates/*")
@@ -43,20 +44,20 @@ func main() {
 	router.Static("static/", "./static/")
 
 	// set UnauthenticatedOnly middleware for this group, so only not-logged in users can access to theme
-	userRoutes := router.Group("/users", mySessionManager.UnauthenticatedOnly)
+	userRoutes := router.Group("/users", mySessionManager.UnauthenticatedOnly())
 	{
 		userRoutes.GET("/login", ShowLoginPage)
-		// use login  function for login
+		//use login  function for login
 		userRoutes.POST("/login", mySessionManager.Login)
 	}
 
 	// set AuthenticatedOnly middleware for this route, so only logged in user can can access this
-	router.GET("/users/logout", mySessionManager.AuthenticatedOnly, mySessionManager.Logout)
+	router.GET("/users/logout", mySessionManager.AuthenticatedOnly(), mySessionManager.Logout)
 
-	router.GET("/home", mySessionManager.AuthenticatedOnly, ShowUserDashboard)
+	router.GET("/home", mySessionManager.AuthenticatedOnly(), ShowUserDashboard)
 
 	// no middleware, so any one can access to this
-	router.GET("/", ShowUserHomePage)
+	router.GET("/", ShowHomePage)
 
 	router.GET("/401", Show401)
 
@@ -66,42 +67,37 @@ func main() {
 }
 
 func ShowUserDashboard(c *gin.Context) {
-	var stat bool
-	s, _ := c.Get("session_id")
-	if s != nil {
-		session := mySessionManager.GetSession(s.(string)).(SimpleAuth.SessionStorage)
-		stat = (session.Username != "")
+	session := sessions.Default(c)
+	user := session.Get("user")
+	if user != nil {
+		user = user.(SimpleAuth.User)
 	}
-	c.HTML(http.StatusOK, "user-dashboard.html", gin.H{"Message": "Welcome", "is_logged_in": stat,})
+	c.HTML(http.StatusOK, "user-dashboard.html", gin.H{"Message": "Welcome", "user": user,})
 }
 
-func ShowUserHomePage(c *gin.Context) {
-	var stat bool
-	s, _ := c.Get("session_id")
-	if s != nil {
-		session := mySessionManager.GetSession(s.(string)).(SimpleAuth.SessionStorage)
-		stat = (session.Username != "")
+func ShowHomePage(c *gin.Context) {
+	session := sessions.Default(c)
+	user := session.Get("user")
+	if user != nil {
+		user = user.(SimpleAuth.User)
 	}
-	fmt.Println(stat)
-	c.HTML(http.StatusOK, "home.html", gin.H{"essage": "Welcome", "is_logged_in": stat,})
+	c.HTML(http.StatusOK, "home.html", gin.H{"user": user,})
 }
 
 func Show401(c *gin.Context) {
-	var stat bool
-	s, _ := c.Get("session_id")
-	if s != nil {
-		session := mySessionManager.GetSession(s.(string)).(SimpleAuth.SessionStorage)
-		stat = (session.Username != "")
+	session := sessions.Default(c)
+	user := session.Get("user")
+	if user != nil {
+		user = user.(SimpleAuth.User)
 	}
-	c.HTML(http.StatusOK, "401.html", gin.H{"Message": "You can't access this page", "is_logged_in": stat,})
+	c.HTML(http.StatusOK, "401.html", gin.H{"Message": "You can't access this page", "user": user,})
 }
 
 func ShowLoginPage(c *gin.Context) {
-	var stat bool
-	s, _ := c.Get("session_id")
-	if s != nil {
-		session := mySessionManager.GetSession(s.(string)).(SimpleAuth.SessionStorage)
-		stat = (session.Username != "")
+	session := sessions.Default(c)
+	user := session.Get("user")
+	if user != nil {
+		user = user.(SimpleAuth.User)
 	}
-	c.HTML(http.StatusOK, "login.html", gin.H{"is_logged_in": stat,})
+	c.HTML(http.StatusOK, "login.html", gin.H{"user": user,})
 }
