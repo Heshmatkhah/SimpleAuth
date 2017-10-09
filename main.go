@@ -201,6 +201,40 @@ func (m *Manager) RegisterNewUser(username, password string, groups []string) (*
 
 }
 
+func (m *Manager) ListAllUsers() (*map[string]User, error) {
+	m.db.Open()
+	defer m.db.Close()
+
+	list := make(map[string]User)
+
+	err := m.db.DataBase.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("users"))
+
+		c := bucket.Cursor()
+
+		var user User
+
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			key := string(k)
+			if key == "groups" {
+				continue
+			}
+			err := json.Unmarshal(v, &user)
+			if err != nil {
+				return err
+			}
+			list[key] = user
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return &list, nil
+}
+
 func (m *Manager) saveUser(user *User) error {
 	m.db.Open()
 	defer m.db.Close()
@@ -247,6 +281,7 @@ func (m *Manager) ChangeUserPassword(username, password string) (*User, error) {
  *                 Middleware                *
  *                                           *
  * ***************************************** */
+ 
 func (m *Manager) AuthenticatedOnly() gin.HandlerFunc {
 	return func(context *gin.Context) {
 		session := sessions.Default(context)
