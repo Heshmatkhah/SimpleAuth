@@ -201,7 +201,7 @@ func (m *Manager) RegisterNewUser(username, password string, groups []string) (*
 
 }
 
-func (m *Manager) ListAllUsers() (*map[string]User, error) {
+func (m *Manager) GetAllUsers() (*map[string]User, error) {
 	m.db.Open()
 	defer m.db.Close()
 
@@ -224,6 +224,34 @@ func (m *Manager) ListAllUsers() (*map[string]User, error) {
 				return err
 			}
 			list[key] = user
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return &list, nil
+}
+
+func (m *Manager) ListAllUsers() (*[]string, error) {
+	m.db.Open()
+	defer m.db.Close()
+
+	var list []string
+
+	err := m.db.DataBase.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("users"))
+
+		c := bucket.Cursor()
+
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			key := string(k)
+			if key == "groups" {
+				continue
+			}
+			list = append(list, key)
 		}
 
 		return nil
